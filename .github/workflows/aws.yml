@@ -1,23 +1,12 @@
-name: Deploy to Amazon ECS
+name: Deploy via SSM
 
 on:
   push:
     branches: [ "main" ]
 
-env:
-  AWS_REGION: AWS_REGION                   # set this to your preferred AWS region, e.g. us-west-1
-  ECR_REPOSITORY: "testrepo"           # set this to your Amazon ECR repository name
-  CONTAINER_NAME: MY_CONTAINER_NAME           # set this to the name of the container in the
-                                               # containerDefinitions section of your task definition
-
-permissions:
-  contents: read
-
 jobs:
   deploy:
-    name: Deploy
     runs-on: ubuntu-latest
-    environment: production
 
     steps:
     - name: Checkout
@@ -27,33 +16,28 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_ACCESS_SECRET_KEY }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Login to Amazon ECR
+    - name: Login to ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v1
 
-    - name: Build, tag, and push image to Amazon ECR
-      id: build-image
+    - name: Build and Push Docker Image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
+        ECR_REPOSITORY: testrepo
       run: |
-        # Build a docker container and
-        # push it to ECR so that it can
-        # be deployed to ECS.
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
-    - name: Set up SSH for EC2 access
+    - name: Deploy via SSM
       run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts
-        ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "echo SSH connection succeeded"
-    
-    
-       
+        aws ssm send-command \
+          --instance-ids ${{ secrets.EC2_INSTANCE_ID }} \
+          --document-name "AWS-RunShellScript" \
+          --comment "Deploy from GitHub Actions" \
+          --parameters commands="docker login -u AWS -p $(aws ecr get-login-password --region ${{ secrets.AWS_REGION }}) ${{ steps.login-ecr.outputs.registry }} && docker pull $IMAGE && docker stop app || true && docker rm app || true && docker run -d --name app -p 80:80 $IMAGE" \
+          --region ${{ secrets.AWS_REGION }}
