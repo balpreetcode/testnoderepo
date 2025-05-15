@@ -39,4 +39,4 @@ jobs:
         ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
     - name: Debug EC2_HOST
-      run: echo "EC2_HOST is: ${{ secrets.EC2_HOST }}"
+      run: echo "EC2_HOST is ${{ secrets.EC2_HOST }}"
