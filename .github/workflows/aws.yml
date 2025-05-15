@@ -10,8 +10,8 @@ jobs:
 
     env:
       EC2_HOST: 3.148.103.18
-      EC2_USER: ec2-user          # or ubuntu, depending on your AMI
-      AWS_REGION: us-east-2       # update this to your region
+      EC2_USER: ec2-user
+      AWS_REGION: us-east-2
       ECR_REPOSITORY: testrepo
 
     steps:
@@ -22,7 +22,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_ACCESS_SECRET_KEY  }}
+        aws-secret-access-key: ${{ secrets.AWS_ACCESS_SECRET_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Login to ECR
@@ -37,6 +37,8 @@ jobs:
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
         echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
     - name: Set up SSH agent
@@ -48,27 +50,22 @@ jobs:
       run: |
         ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << EOF
           # Set AWS credentials
+          mkdir -p ~/.aws
           echo "[default]" > ~/.aws/credentials
           echo "aws_access_key_id = $AWS_ACCESS_KEY_ID" >> ~/.aws/credentials
           echo "aws_secret_access_key = $AWS_ACCESS_SECRET_KEY" >> ~/.aws/credentials
           echo "region = $AWS_REGION" > ~/.aws/config
           
-          # Now proceed with the Docker login and deploy
-          export AWS_REGION="${AWS_REGION}"
-          export IMAGE="${IMAGE}"
-          export ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
-    
-          echo "🔐 Logging into ECR..."
-          aws ecr get-login-password --region \$AWS_REGION | \
-            docker login --username AWS --password-stdin \$ECR_REGISTRY
-    
-          echo "📦 Pulling latest image..."
-          docker pull \$IMAGE
-    
-          echo "🛑 Stopping old container (if any)..."
+          # Log into ECR
+          aws ecr get-login-password --region \$AWS_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY
+          
+          # Pull the image
+          docker pull \$ECR_REGISTRY/\$ECR_REPOSITORY:latest
+          
+          # Stop any old container
           docker stop app || true
           docker rm app || true
-    
-          echo "🚀 Running new container on port 3000..."
-          docker run -d --name app -p 3000:3000 \$IMAGE
+          
+          # Run the new container on port 3000
+          docker run -d --name app -p 3000:3000 \$ECR_REGISTRY/\$ECR_REPOSITORY:latest
         EOF
