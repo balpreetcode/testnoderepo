@@ -23,7 +23,7 @@ jobs:
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_ACCESS_SECRET_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to ECR
       id: login-ecr
@@ -33,7 +33,6 @@ jobs:
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
-        ECR_REPOSITORY: testrepo
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
@@ -48,24 +47,34 @@ jobs:
 
     - name: Run deployment on EC2
       run: |
-        ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << EOF
-          # Set AWS credentials
+        # Properly escape variables and commands for the remote shell
+        ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOREMOTE'
+          # Create AWS credentials directory
           mkdir -p ~/.aws
-          echo "[default]" > ~/.aws/credentials
-          echo "aws_access_key_id = $AWS_ACCESS_KEY_ID" >> ~/.aws/credentials
-          echo "aws_secret_access_key = $AWS_ACCESS_SECRET_KEY" >> ~/.aws/credentials
-          echo "region = $AWS_REGION" > ~/.aws/config
           
-          # Log into ECR
-          aws ecr get-login-password --region \$AWS_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY
+          # Write AWS credentials
+          cat > ~/.aws/credentials << 'EOAWS'
+          [default]
+          aws_access_key_id = $AWS_ACCESS_KEY_ID
+          aws_secret_access_key = $AWS_SECRET_ACCESS_KEY
+          EOAWS
+          
+          # Write AWS config
+          cat > ~/.aws/config << 'EOCONFIG'
+          [default]
+          region = $AWS_REGION
+          EOCONFIG
+          
+          # Log into ECR (non-interactively)
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
           
           # Pull the image
-          docker pull \$ECR_REGISTRY/\$ECR_REPOSITORY:latest
+          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
           
-          # Stop any old container
+          # Stop and remove old container if it exists
           docker stop app || true
           docker rm app || true
           
-          # Run the new container on port 3000
-          docker run -d --name app -p 3000:3000 \$ECR_REGISTRY/\$ECR_REPOSITORY:latest
-        EOF
+          # Run the new container
+          docker run -d --name app -p 3000:3000 $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        EOREMOTE
