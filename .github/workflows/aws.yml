@@ -33,12 +33,11 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
-    - name: Deploy via SSM
-      run: |
-        echo "EC2_HOST: ${{ secrets.EC2_HOST }}"
-        echo "EC2_USER: ${{ secrets.EC2_USER }}"
-
     - name: Set up SSH agent
       uses: webfactory/ssh-agent@v0.7.0
       with:
         ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+    - name: Run deployment command on EC2
+      run: |
+        ssh -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "echo '✅ SSH connection succeeded!'"
