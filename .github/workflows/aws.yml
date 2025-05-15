@@ -46,4 +46,19 @@ jobs:
 
     - name: Run deployment on EC2
       run: |
-        ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "echo '✅ SSH connection succeeded!'"
+        ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << 'EOF'
+          echo "🔐 Logging into ECR..."
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin ${{ steps.login-ecr.outputs.registry }}
+    
+          echo "📦 Pulling latest image..."
+          docker pull $IMAGE
+    
+          echo "🛑 Stopping old container (if any)..."
+          docker stop app || true
+          docker rm app || true
+    
+          echo "🚀 Running new container on port 3000..."
+          docker run -d --name app -p 3000:3000 $IMAGE
+        EOF
+
