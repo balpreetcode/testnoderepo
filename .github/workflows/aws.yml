@@ -47,7 +47,13 @@ jobs:
     - name: Run deployment on EC2
       run: |
         ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST << EOF
-          # Set the AWS region and image
+          # Set AWS credentials
+          echo "[default]" > ~/.aws/credentials
+          echo "aws_access_key_id = $AWS_ACCESS_KEY_ID" >> ~/.aws/credentials
+          echo "aws_secret_access_key = $AWS_ACCESS_SECRET_KEY" >> ~/.aws/credentials
+          echo "region = $AWS_REGION" > ~/.aws/config
+          
+          # Now proceed with the Docker login and deploy
           export AWS_REGION="${AWS_REGION}"
           export IMAGE="${IMAGE}"
           export ECR_REGISTRY="${{ steps.login-ecr.outputs.registry }}"
