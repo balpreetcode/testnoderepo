@@ -13,7 +13,7 @@ jobs:
       EC2_USER: ec2-user
       AWS_REGION: us-east-2
       ECR_REPOSITORY: testrepo
-      APP_PORT: 3000  # Make sure this matches your app's port
+      APP_PORT: 3000
 
     steps:
     - name: Checkout
@@ -49,6 +49,8 @@ jobs:
     - name: Run deployment on EC2
       run: |
         ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOREMOTE'
+          set -x  # Enable debug output
+          
           # Create AWS credentials directory
           mkdir -p ~/.aws
           
@@ -65,34 +67,70 @@ jobs:
           region = $AWS_REGION
           EOCONFIG
           
-          # Log into ECR (non-interactively)
+          # Log into ECR
+          echo "Logging into ECR..."
           aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
           
           # Pull the image
+          echo "Pulling Docker image..."
           docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
           
           # Stop and remove old container if it exists
+          echo "Stopping and removing old container..."
           docker stop app || true
           docker rm app || true
           
-          # Run the new container with restart policy
-          docker run -d --name app -p $APP_PORT:3000 --restart unless-stopped $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          # Run the new container with debug options
+          echo "Starting new container..."
+          docker run -d \
+            --name app \
+            -p $APP_PORT:3000 \
+            --restart unless-stopped \
+            $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          # Immediate verification
+          echo "Checking container status..."
+          sleep 5  # Give container time to start
+          docker ps -a
+          docker inspect app
+          docker logs app
         EOREMOTE
 
-    - name: Verify Docker container is running
+    - name: Verify deployment
       run: |
         ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOVERIFY'
-          echo "Checking running containers..."
-          docker ps
+          set -e  # Exit on error
           
-          echo -e "\nChecking app container status..."
-          docker inspect -f '{{.State.Status}}' app || echo "Container 'app' not found"
+          echo "=== Full container status ==="
+          docker ps -a
           
-          if docker ps | grep -q app; then
+          echo -e "\n=== Checking app container ==="
+          CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' app 2>/dev/null || echo "missing")
+          
+          if [ "$CONTAINER_STATUS" == "running" ]; then
             echo "✅ Container is running"
+            echo -e "\n=== Container logs ==="
+            docker logs app --tail 50
+          elif [ "$CONTAINER_STATUS" == "exited" ]; then
+            echo "❌ Container exited"
+            echo -e "\n=== Exit code ==="
+            docker inspect -f '{{.State.ExitCode}}' app
+            echo -e "\n=== Container logs ==="
+            docker logs app
+            exit 1
           else
-            echo "❌ Container is not running"
-            docker logs app || true
+            echo "❌ Container not found or in $CONTAINER_STATUS state"
+            echo -e "\n=== All containers ==="
+            docker ps -a
+            exit 1
+          fi
+          
+          echo -e "\n=== Testing application health ==="
+          if curl -sSf --retry 3 --retry-delay 2 http://localhost:$APP_PORT/; then
+            echo "✅ Application is responding"
+          else
+            echo "❌ Application not responding"
+            docker logs app
             exit 1
           fi
         EOVERIFY
