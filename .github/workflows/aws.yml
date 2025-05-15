@@ -46,55 +46,89 @@ jobs:
       with:
         ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-    - name: Run deployment on EC2
-      run: |
-        ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOREMOTE'
-          set -x  # Enable debug output
+    - name: Run deployment on EC2 with detailed debugging
+  run: |
+    ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EODEPLOY'
+    set -ex  # Enable debugging and exit on error
+    
+    # Verify AWS credentials exist
+    echo "=== AWS Credentials ==="
+    cat ~/.aws/credentials || echo "No credentials file"
+    aws sts get-caller-identity || echo "AWS CLI not working"
+    
+    # Verify ECR login
+    echo "=== ECR Auth ==="
+    cat ~/.docker/config.json || echo "No docker config"
+    
+    # Pull image with verbose output
+    echo "=== Pulling Image ==="
+    docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
+    
+    # Clean up any existing container
+    echo "=== Cleaning Up ==="
+    docker stop app || true
+    docker rm app || true
+    
+    # Run container with debug options
+    echo "=== Starting Container ==="
+    docker run -d \
+      --name app \
+      -p $APP_PORT:3000 \
+      --restart unless-stopped \
+      $ECR_REGISTRY/$ECR_REPOSITORY:latest
+    
+    # Immediate status check
+    echo "=== Container Status ==="
+    sleep 5  # Give container time to start
+    docker ps -a
+    docker inspect app || echo "Container inspection failed"
+    docker logs app || echo "Could not get container logs"
+    EODEPLOY
+
+    - name: Verify deployment with retries
+    run: |
+      for i in {1..5}; do
+        ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOVERIFY' && break
+          set -e
+          echo "=== Attempt $i/5 ==="
           
-          # Create AWS credentials directory
-          mkdir -p ~/.aws
+          # Check container exists
+          if ! docker inspect app >/dev/null 2>&1; then
+            echo "❌ Container 'app' does not exist"
+            exit 1
+          fi
           
-          # Write AWS credentials
-          cat > ~/.aws/credentials << 'EOAWS'
-          [default]
-          aws_access_key_id = $AWS_ACCESS_KEY_ID
-          aws_secret_access_key = $AWS_SECRET_ACCESS_KEY
-          EOAWS
+          # Get detailed status
+          CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' app)
+          echo "Container status: $CONTAINER_STATUS"
           
-          # Write AWS config
-          cat > ~/.aws/config << 'EOCONFIG'
-          [default]
-          region = $AWS_REGION
-          EOCONFIG
+          if [ "$CONTAINER_STATUS" != "running" ]; then
+            echo "❌ Container not running"
+            echo "Exit code: $(docker inspect -f '{{.State.ExitCode}}' app)"
+            echo "=== Logs ==="
+            docker logs app || true
+            exit 1
+          fi
           
-          # Log into ECR
-          echo "Logging into ECR..."
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-          
-          # Pull the image
-          echo "Pulling Docker image..."
-          docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          
-          # Stop and remove old container if it exists
-          echo "Stopping and removing old container..."
-          docker stop app || true
-          docker rm app || true
-          
-          # Run the new container with debug options
-          echo "Starting new container..."
-          docker run -d \
-            --name app \
-            -p $APP_PORT:3000 \
-            --restart unless-stopped \
-            $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          
-          # Immediate verification
-          echo "Checking container status..."
-          sleep 5  # Give container time to start
-          docker ps -a
-          docker inspect app
-          docker logs app
-        EOREMOTE
+          # Test application
+          if curl -sSf --connect-timeout 5 http://localhost:$APP_PORT/; then
+            echo "✅ Application is healthy"
+            exit 0
+          else
+            echo "❌ Application not responding"
+            docker logs app --tail 50 || true
+            exit 1
+          fi
+        EOVERIFY
+        
+        if [ $i -lt 5 ]; then
+          echo "Retrying in 10 seconds..."
+          sleep 10
+        else
+          echo "All verification attempts failed"
+          exit 1
+        fi
+      done
 
     - name: Verify deployment
       run: |
