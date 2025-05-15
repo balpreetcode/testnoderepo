@@ -9,6 +9,14 @@ const messages = [
   { id: 2, text: 'Hi there!' }
 ];
 
+// Root route
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Welcome to the API! Visit /api/messages to see messages.'
+  });
+});
+
 // GET endpoint to fetch all messages
 app.get('/api/messages', (req, res) => {
   res.json({
