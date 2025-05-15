@@ -1,4 +1,4 @@
-name: Deploy via SSM
+name: Deploy via SSH
 
 on:
   push:
@@ -13,6 +13,7 @@ jobs:
       EC2_USER: ec2-user
       AWS_REGION: us-east-2
       ECR_REPOSITORY: testrepo
+      APP_PORT: 3000  # Make sure this matches your app's port
 
     steps:
     - name: Checkout
@@ -47,7 +48,6 @@ jobs:
 
     - name: Run deployment on EC2
       run: |
-        # Properly escape variables and commands for the remote shell
         ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOREMOTE'
           # Create AWS credentials directory
           mkdir -p ~/.aws
@@ -75,6 +75,24 @@ jobs:
           docker stop app || true
           docker rm app || true
           
-          # Run the new container
-          docker run -d --name app -p 3000:3000 $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          # Run the new container with restart policy
+          docker run -d --name app -p $APP_PORT:3000 --restart unless-stopped $ECR_REGISTRY/$ECR_REPOSITORY:latest
         EOREMOTE
+
+    - name: Verify Docker container is running
+      run: |
+        ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOVERIFY'
+          echo "Checking running containers..."
+          docker ps
+          
+          echo -e "\nChecking app container status..."
+          docker inspect -f '{{.State.Status}}' app || echo "Container 'app' not found"
+          
+          if docker ps | grep -q app; then
+            echo "✅ Container is running"
+          else
+            echo "❌ Container is not running"
+            docker logs app || true
+            exit 1
+          fi
+        EOVERIFY
