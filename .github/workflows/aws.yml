@@ -8,6 +8,12 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
+    env:
+      EC2_HOST: 3.148.103.18
+      EC2_USER: ec2-user          # or ubuntu, depending on your AMI
+      AWS_REGION: us-east-2       # update this to your region
+      ECR_REPOSITORY: testrepo
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -38,5 +44,6 @@ jobs:
       with:
         ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
 
-    - name: Debug EC2_HOST
-      run: echo "EC2_HOST is ${{ secrets.EC2_HOST }}"
+    - name: Run deployment on EC2
+      run: |
+        ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "echo '✅ SSH connection succeeded!'"
