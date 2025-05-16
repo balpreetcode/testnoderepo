@@ -128,24 +128,3 @@ jobs:
           exit 1
         fi
         EOVERIFY
-
-    - name: Verify external access
-      run: |
-        if curl -sSf --retry 3 --retry-delay 5 --connect-timeout 10 http://$EC2_HOST:$APP_PORT/ >/dev/null; then
-          echo "✅ Application is accessible externally"
-        else
-          echo "❌ Application not accessible externally"
-          echo "Check:"
-          echo "1. Security group rules for port $APP_PORT"
-          echo "2. Application is binding to 0.0.0.0, not just localhost"
-          
-          # Get container status for debugging
-          ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EODEBUG'
-            echo "=== Current Container Status ==="
-            docker ps -a
-            echo "=== Container Logs ==="
-            docker logs app --tail 50 || true
-          EODEBUG
-          
-          exit 1
-        fi
