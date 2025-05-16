@@ -66,22 +66,7 @@ jobs:
           exit 1;
         }
         
-        # Set AWS region (EC2 uses instance profile for credentials)
-        aws configure set region us-east-2
-        
-        # Debug IAM role (optional)
-        echo "=== AWS Identity ==="
-        aws sts get-caller-identity
-        
-        # Login to ECR using EC2 instance profile
-        echo "=== Logging into ECR ==="
-        aws ecr get-login-password --region us-east-2 | \
-          docker login --username AWS --password-stdin $ECR_REGISTRY || {
-            echo "ECR login failed";
-            exit 1;
-          }
-        
-        # Pull the latest image with retries
+        # Pull the latest image using instance profile credentials
         echo "=== Pulling Docker Image ==="
         for i in {1..5}; do
           if docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest; then
@@ -100,23 +85,18 @@ jobs:
         docker stop app || true
         docker rm app || true
         
-        # Run new container with health check
+        # Run new container
         echo "=== Starting New Container ==="
         docker run -d \
           --name app \
           -p $APP_PORT:3000 \
           --restart unless-stopped \
-          --health-cmd "curl -f http://localhost:$APP_PORT/ || exit 1" \
-          --health-interval 10s \
-          --health-retries 3 \
-          --health-timeout 5s \
           $ECR_REGISTRY/$ECR_REPOSITORY:latest
         
         # Verify container started
         echo "=== Container Status ==="
-        sleep 10  # Increased wait time
+        sleep 10
         docker ps -a
-        docker inspect --format='{{json .State.Health}}' app || true
         EODEPLOY
 
     - name: Verify deployment
