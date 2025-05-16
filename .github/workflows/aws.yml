@@ -15,8 +15,8 @@ jobs:
       ECR_REPOSITORY: testrepo
       ECR_REGISTRY: 289440861148.dkr.ecr.us-east-2.amazonaws.com
       APP_PORT: 3000
-      MAX_RETRIES: 5
-      RETRY_DELAY: 10
+      MAX_RETRIES: 3
+      RETRY_DELAY: 5
 
     steps:
     - name: Checkout code
@@ -42,7 +42,6 @@ jobs:
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
 
     - name: Set up SSH agent
       uses: webfactory/ssh-agent@v0.7.0
@@ -59,42 +58,39 @@ jobs:
         set -ex
         
         # Ensure Docker is running
-        if ! sudo systemctl is-active --quiet docker; then
-          echo "Starting Docker service..."
-          sudo systemctl start docker || sudo systemctl restart docker
-        fi
+        sudo systemctl start docker || sudo systemctl restart docker
         
-        # Verify Docker is operational
-        docker info || {
-          echo "Docker not functioning properly"
-          sudo systemctl status docker
-          exit 1
-        }
+        # Pull the image with retries
+        for i in {1..$MAX_RETRIES}; do
+          if docker pull ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest; then
+            break
+          fi
+          if [ $i -eq $MAX_RETRIES ]; then
+            echo "❌ Failed to pull image after $MAX_RETRIES attempts"
+            exit 1
+          fi
+          echo "⚠️ Pull failed, retrying in $RETRY_DELAY seconds..."
+          sleep $RETRY_DELAY
+        done
         
-        # Pull the image using instance profile credentials
-        echo "=== Pulling Docker Image ==="
-        docker pull ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest || {
-          echo "Failed to pull image"
-          exit 1
-        }
+        # Clean up old container
+        docker rm -f app || true
         
-        # Stop and remove old container if exists
-        echo "=== Cleaning Up Old Containers ==="
-        docker stop app || true
-        docker rm app || true
-        
-        # Run new container
-        echo "=== Starting New Container ==="
+        # Run new container with health check
         docker run -d \
           --name app \
           -p ${APP_PORT}:3000 \
           --restart unless-stopped \
+          --health-cmd "curl -f http://localhost:${APP_PORT}/ || exit 1" \
+          --health-interval 10s \
+          --health-timeout 5s \
+          --health-retries 3 \
           ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
         
         # Verify container started
-        echo "=== Container Status ==="
-        sleep 5
+        sleep 10
         docker ps -a
+        docker inspect --format='{{json .State.Health}}' app || true
         EODEPLOY
 
     - name: Verify deployment
@@ -104,27 +100,24 @@ jobs:
           /bin/bash << 'EOVERIFY'
         set -e
         
-        echo "=== Docker Container Status ==="
+        echo "=== Container Status ==="
         docker ps -a
         
-        echo "=== Checking Container Health ==="
-        CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' app || echo "missing")
+        CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' app)
+        HEALTH_STATUS=$(docker inspect -f '{{.State.Health.Status}}' app 2>/dev/null || echo "no-health-check")
         
         if [ "$CONTAINER_STATUS" != "running" ]; then
-          echo "❌ Container is not running. Status: $CONTAINER_STATUS"
-          echo "Exit Code: $(docker inspect -f '{{.State.ExitCode}}' app 2>/dev/null || echo "N/A")"
-          echo "=== Container Logs ==="
-          docker logs app --tail 50 || true
-          exit 1
-        fi
-        
-        echo "=== Testing Application Endpoint ==="
-        if curl -sSf --retry 3 --retry-delay 2 http://localhost:${APP_PORT}/ >/dev/null; then
-          echo "✅ Application is responding"
-        else
-          echo "❌ Application not responding"
-          echo "=== Last 50 Log Lines ==="
+          echo "❌ Container is not running (Status: $CONTAINER_STATUS)"
           docker logs app --tail 50
           exit 1
         fi
+        
+        if [ "$HEALTH_STATUS" == "unhealthy" ]; then
+          echo "❌ Container health check failed"
+          docker inspect --format='{{json .State.Health}}' app
+          docker logs app --tail 50
+          exit 1
+        fi
+        
+        echo "✅ Container is running and healthy"
         EOVERIFY
