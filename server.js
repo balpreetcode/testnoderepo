@@ -17,6 +17,14 @@ app.get('/', (req, res) => {
   });
 });
 
+// users route
+app.get('/users', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Welcome to the users route.'
+  });
+});
+
 // GET endpoint to fetch all messages
 app.get('/api/messages', (req, res) => {
   res.json({
