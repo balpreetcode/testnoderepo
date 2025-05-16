@@ -55,13 +55,13 @@ jobs:
         sudo systemctl status docker || sudo systemctl start docker
 
         # Set AWS region (EC2 uses instance profile for credentials)
-        aws configure set region $AWS_REGION
+        aws configure set region us-east-2
 
         # Debug IAM role (optional)
         aws sts get-caller-identity
 
         # Login to ECR using EC2 instance profile
-        aws ecr get-login-password --region $AWS_REGION | \
+        aws ecr get-login-password --region us-east-2 | \
           docker login --username AWS --password-stdin $ECR_REGISTRY
 
         # Pull the latest image
