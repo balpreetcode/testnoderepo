@@ -50,41 +50,34 @@ jobs:
       run: |
         ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EODEPLOY'
         set -ex  # Enable debugging and exit on error
-        
-        # Verify Docker is running
+
+        # Ensure Docker is running
         sudo systemctl status docker || sudo systemctl start docker
-        
-        # Configure AWS credentials
-        mkdir -p ~/.aws
-        cat > ~/.aws/credentials << EOF
-        [default]
-        aws_access_key_id = $AWS_ACCESS_KEY_ID
-        aws_secret_access_key = $AWS_ACCESS_SECRET_KEY
-        EOF
-        
-        cat > ~/.aws/config << EOF
-        [default]
-        region = $AWS_REGION
-        EOF
-        
-        # Login to ECR
+
+        # Set AWS region (EC2 uses instance profile for credentials)
+        aws configure set region $AWS_REGION
+
+        # Debug IAM role (optional)
+        aws sts get-caller-identity
+
+        # Login to ECR using EC2 instance profile
         aws ecr get-login-password --region $AWS_REGION | \
           docker login --username AWS --password-stdin $ECR_REGISTRY
-        
+
         # Pull the latest image
         docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        
+
         # Stop and remove old container if exists
         docker stop app || true
         docker rm app || true
-        
-        # Run new container with proper restart policy
+
+        # Run new container
         docker run -d \
           --name app \
           -p $APP_PORT:3000 \
           --restart unless-stopped \
           $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        
+
         # Verify container started
         sleep 5
         docker ps -a
@@ -92,18 +85,17 @@ jobs:
 
     - name: Verify deployment
       run: |
-        # Wait for application to start
-        sleep 15
-        
+        sleep 15  # Wait for app to start
+
         ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOVERIFY'
-        set -e  # Exit on error
-        
+        set -e
+
         echo "=== Docker Container Status ==="
         docker ps -a
-        
+
         echo "=== Checking Container Health ==="
         CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' app)
-        
+
         if [ "$CONTAINER_STATUS" != "running" ]; then
           echo "❌ Container is not running. Status: $CONTAINER_STATUS"
           echo "Exit Code: $(docker inspect -f '{{.State.ExitCode}}' app)"
@@ -111,7 +103,7 @@ jobs:
           docker logs app || true
           exit 1
         fi
-        
+
         echo "=== Testing Application Endpoint ==="
         if curl -sSf --retry 3 --retry-delay 5 http://localhost:$APP_PORT/ >/dev/null; then
           echo "✅ Application is responding"
