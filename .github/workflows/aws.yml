@@ -14,6 +14,8 @@ jobs:
       AWS_REGION: us-east-2
       ECR_REPOSITORY: testrepo
       APP_PORT: 3000
+      MAX_RETRIES: 5
+      RETRY_DELAY: 10
 
     steps:
     - name: Checkout code
@@ -23,7 +25,7 @@ jobs:
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_ACCESS_SECRET_KEY }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
     - name: Login to Amazon ECR
@@ -52,75 +54,145 @@ jobs:
         set -ex  # Enable debugging and exit on error
 
         # Ensure Docker is running
-        sudo systemctl status docker || sudo systemctl start docker
+        if ! sudo systemctl is-active --quiet docker; then
+          echo "Starting Docker service..."
+          sudo systemctl start docker || sudo systemctl restart docker
+        fi
+
+        # Verify Docker is operational
+        docker info || {
+          echo "Docker not functioning properly";
+          sudo systemctl status docker;
+          exit 1;
+        }
 
         # Set AWS region (EC2 uses instance profile for credentials)
         aws configure set region us-east-2
 
         # Debug IAM role (optional)
+        echo "=== AWS Identity ==="
         aws sts get-caller-identity
 
         # Login to ECR using EC2 instance profile
+        echo "=== Logging into ECR ==="
         aws ecr get-login-password --region us-east-2 | \
-          docker login --username AWS --password-stdin $ECR_REGISTRY
+          docker login --username AWS --password-stdin $ECR_REGISTRY || {
+            echo "ECR login failed";
+            exit 1;
+          }
 
-        # Pull the latest image
-        docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        # Pull the latest image with retries
+        echo "=== Pulling Docker Image ==="
+        for i in {1..$MAX_RETRIES}; do
+          if docker pull $ECR_REGISTRY/$ECR_REPOSITORY:latest; then
+            break
+          fi
+          if [ $i -eq $MAX_RETRIES ]; then
+            echo "Failed to pull image after $MAX_RETRIES attempts"
+            exit 1
+          fi
+          echo "Retrying in $RETRY_DELAY seconds..."
+          sleep $RETRY_DELAY
+        done
 
         # Stop and remove old container if exists
+        echo "=== Cleaning Up Old Containers ==="
         docker stop app || true
         docker rm app || true
 
-        # Run new container
+        # Run new container with health check
+        echo "=== Starting New Container ==="
         docker run -d \
           --name app \
           -p $APP_PORT:3000 \
           --restart unless-stopped \
+          --health-cmd "curl -f http://localhost:$APP_PORT/ || exit 1" \
+          --health-interval 10s \
+          --health-retries 3 \
+          --health-timeout 5s \
           $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
         # Verify container started
-        sleep 5
+        echo "=== Container Status ==="
+        sleep 10  # Increased wait time
         docker ps -a
+        docker inspect --format='{{json .State.Health}}' app || true
         EODEPLOY
 
     - name: Verify deployment
       run: |
-        sleep 15  # Wait for app to start
+        # Wait for application to start with retries
+        for i in {1..$MAX_RETRIES}; do
+          ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOVERIFY' && break
+          set -e
 
-        ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EOVERIFY'
-        set -e
+          echo "=== Attempt $i/$MAX_RETRIES ==="
+          echo "=== Docker Container Status ==="
+          docker ps -a
 
-        echo "=== Docker Container Status ==="
-        docker ps -a
+          echo "=== Checking Container Health ==="
+          CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' app)
+          HEALTH_STATUS=$(docker inspect -f '{{.State.Health.Status}}' app 2>/dev/null || echo "no-health-check")
 
-        echo "=== Checking Container Health ==="
-        CONTAINER_STATUS=$(docker inspect -f '{{.State.Status}}' app)
+          if [ "$CONTAINER_STATUS" != "running" ]; then
+            echo "❌ Container is not running. Status: $CONTAINER_STATUS"
+            echo "Exit Code: $(docker inspect -f '{{.State.ExitCode}}' app)"
+            echo "=== Container Logs ==="
+            docker logs app || true
+            exit 1
+          fi
 
-        if [ "$CONTAINER_STATUS" != "running" ]; then
-          echo "❌ Container is not running. Status: $CONTAINER_STATUS"
-          echo "Exit Code: $(docker inspect -f '{{.State.ExitCode}}' app)"
-          echo "=== Container Logs ==="
-          docker logs app || true
-          exit 1
-        fi
+          if [ "$HEALTH_STATUS" == "unhealthy" ]; then
+            echo "❌ Container is running but health check failed"
+            echo "=== Health Check Log ==="
+            docker inspect --format='{{json .State.Health}}' app
+            echo "=== Last 50 Log Lines ==="
+            docker logs app --tail 50
+            exit 1
+          fi
 
-        echo "=== Testing Application Endpoint ==="
-        if curl -sSf --retry 3 --retry-delay 5 http://localhost:$APP_PORT/ >/dev/null; then
-          echo "✅ Application is responding"
-        else
-          echo "❌ Application not responding"
-          echo "=== Last 50 Log Lines ==="
-          docker logs app --tail 50
-          exit 1
-        fi
-        EOVERIFY
+          echo "=== Testing Application Endpoint ==="
+          if curl -sSf --connect-timeout 5 http://localhost:$APP_PORT/ >/dev/null; then
+            echo "✅ Application is responding"
+            exit 0
+          else
+            echo "❌ Application not responding"
+            echo "=== Last 50 Log Lines ==="
+            docker logs app --tail 50
+            exit 1
+          fi
+          EOVERIFY
+
+          if [ $i -lt $MAX_RETRIES ]; then
+            echo "Retrying in $RETRY_DELAY seconds..."
+            sleep $RETRY_DELAY
+          else
+            echo "All verification attempts failed"
+            exit 1
+          fi
+        done
 
     - name: Verify external access
       run: |
-        if curl -sSf --retry 3 --retry-delay 5 http://$EC2_HOST:$APP_PORT/ >/dev/null; then
+        # Wait for application to be ready
+        sleep 15
+        
+        if curl -sSf --retry 3 --retry-delay 5 --connect-timeout 10 http://$EC2_HOST:$APP_PORT/ >/dev/null; then
           echo "✅ Application is accessible externally"
         else
           echo "❌ Application not accessible externally"
-          echo "Check EC2 security group rules for port $APP_PORT"
+          echo "Possible issues:"
+          echo "1. Security group not allowing inbound traffic on port $APP_PORT"
+          echo "2. Application not binding to 0.0.0.0"
+          echo "3. Application not running"
+          
+          # Get container status for debugging
+          ssh -T -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST /bin/bash << 'EODEBUG'
+            echo "=== Current Container Status ==="
+            docker ps -a
+            echo "=== Container Logs ==="
+            docker logs app --tail 50 || true
+          EODEBUG
+          
           exit 1
         fi
