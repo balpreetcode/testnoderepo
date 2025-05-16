@@ -1,15 +1,23 @@
-// filename: server-get.js
+// filename: server.js
 const express = require('express');
+const promClient = require('prom-client');
 const app = express();
 const PORT = 3000;
 
-// Prometheus client setup
-const client = require('prom-client');
-const register = new client.Registry();
-client.collectDefaultMetrics({ register });
+// Prometheus metrics setup
+const register = new promClient.Registry();
+promClient.collectDefaultMetrics({ register });
 
-// Custom counter metric
-const messagesCounter = new client.Counter({
+// Request counter metric
+const httpRequestCounter = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method', 'route', 'status'],
+});
+register.registerMetric(httpRequestCounter);
+
+// Custom /api/messages counter
+const messagesCounter = new promClient.Counter({
   name: 'api_messages_requests_total',
   help: 'Total number of /api/messages requests',
 });
@@ -18,50 +26,59 @@ register.registerMetric(messagesCounter);
 // Middleware to parse JSON
 app.use(express.json());
 
-// Simple in-memory array for demo
+// Middleware to count all HTTP requests
+app.use((req, res, next) => {
+  res.on('finish', () => {
+    httpRequestCounter.inc({
+      method: req.method,
+      route: req.route ? req.route.path : req.path,
+      status: res.statusCode,
+    });
+  });
+  next();
+});
+
+// Sample in-memory data
 const messages = [
   { id: 1, text: 'Hello, world!' },
-  { id: 2, text: 'Hi there!' }
+  { id: 2, text: 'Hi there!' },
 ];
 
-// Root route
+// Routes
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: 'Welcome to the API! Visit /api/messages to see messages.'
+    message: 'Welcome to the API! Visit /api/messages to see messages.',
   });
 });
 
-// Users route
 app.get('/users', (req, res) => {
   res.json({
     success: true,
-    message: 'Welcome to the users route.'
+    message: 'Welcome to the users route.',
   });
 });
 
-// GET endpoint to fetch all messages
 app.get('/api/messages', (req, res) => {
-  messagesCounter.inc(); // Increment Prometheus counter
+  messagesCounter.inc(); // Increment custom counter
   res.json({
     success: true,
-    data: messages
+    data: messages,
   });
 });
 
-// Echo endpoint
 app.post('/api/echo', (req, res) => {
   const payload = req.body;
   if (!payload || Object.keys(payload).length === 0) {
     return res.status(400).json({
       success: false,
-      error: 'Request body is empty'
+      error: 'Request body is empty',
     });
   }
 
   res.json({
     success: true,
-    received: payload
+    received: payload,
   });
 });
 
@@ -71,6 +88,7 @@ app.get('/metrics', async (req, res) => {
   res.end(await register.metrics());
 });
 
+// Start the server
 app.listen(PORT, () => {
-  console.log(`GET-server listening on http://localhost:${PORT}`);
+  console.log(`Server listening at http://localhost:${PORT}`);
 });
