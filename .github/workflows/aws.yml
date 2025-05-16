@@ -13,11 +13,10 @@ jobs:
       EC2_USER: ec2-user
       AWS_REGION: us-east-2
       ECR_REPOSITORY: testrepo
+      ECR_REGISTRY: 289440861148.dkr.ecr.us-east-2.amazonaws.com
       APP_PORT: 3000
       MAX_RETRIES: 5
       RETRY_DELAY: 10
-      ECR_REGISTRY: 289440861148.dkr.ecr.us-east-2.amazonaws.com
-      ECR_REPOSITORY: testrepo
 
     steps:
     - name: Checkout code
