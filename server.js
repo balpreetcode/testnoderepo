@@ -59,6 +59,14 @@ app.get('/users', (req, res) => {
   });
 });
 
+
+app.get('/test-route', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Welcome to the test route.',
+  });
+});
+
 app.get('/api/messages', (req, res) => {
   messagesCounter.inc(); // Increment custom counter
   res.json({
